@@ -1,0 +1,11 @@
+{
+  "labels": [
+    "invoice",
+    "email",
+    "scientific_report",
+    "letter"
+  ],
+  "accuracy": 0.9997,
+  "model": "LinearSVC",
+  "features": "TF-IDF word(1-2)+char(3-5) n-grams"
+}
