@@ -30,6 +30,10 @@ from scipy.sparse import hstack
 ROOT       = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
 
+# Minimum characters returned by pdfplumber before we consider the PDF
+# "text-based".  Scanned PDFs often return 0-20 chars of garbage.
+_PDF_TEXT_MIN_CHARS = 50
+
 # ── lazy-load model artefacts ─────────────────────────────────────────────────
 _word_vec  = None
 _char_vec  = None
@@ -48,8 +52,82 @@ def _load_models():
 
 # ── text extraction from files ────────────────────────────────────────────────
 
-def _read_pdf(path: Path) -> str:
-    """Extract text from PDF using pdfplumber."""
+def _ocr_image(image) -> str:
+    """
+    Run Tesseract OCR on a PIL Image and return the extracted text.
+    Uses --oem 3 (LSTM engine) and --psm 3 (fully automatic page segmentation).
+    """
+    import pytesseract
+    return pytesseract.image_to_string(
+        image,
+        lang="eng",
+        config="--oem 3 --psm 3",
+    )
+
+
+def _ocr_pdf(path: Path) -> str:
+    """
+    Convert each PDF page to an image and run Tesseract OCR on it.
+    Used as a fallback when pdfplumber finds no text layer (scanned PDF).
+    Requires: pdf2image + poppler   (brew install poppler)
+    """
+    try:
+        from pdf2image import convert_from_path
+    except ImportError:
+        raise ImportError(
+            "pdf2image is required for scanned PDFs: pip install pdf2image\n"
+            "You also need poppler: brew install poppler"
+        )
+
+    pages = convert_from_path(str(path), dpi=300)
+    text_parts = []
+    for i, page_img in enumerate(pages, 1):
+        # Optional: pre-process image for better OCR accuracy
+        page_img = _preprocess_for_ocr(page_img)
+        text = _ocr_image(page_img)
+        if text.strip():
+            text_parts.append(text)
+
+    return "\n\n".join(text_parts)
+
+
+def _preprocess_for_ocr(image):
+    """
+    Lightweight image pre-processing to improve Tesseract accuracy:
+      - Convert to greyscale
+      - Increase contrast via histogram equalisation
+    PIL-only, no OpenCV dependency needed.
+    """
+    from PIL import ImageOps, ImageFilter
+    image = image.convert("L")                    # greyscale
+    image = ImageOps.autocontrast(image, cutoff=2) # stretch contrast
+    image = image.filter(ImageFilter.SHARPEN)      # mild sharpen
+    return image
+
+
+def _read_image(path: Path) -> str:
+    """Run Tesseract OCR on a standalone image file (PNG, JPG, TIFF, BMP)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise ImportError("Pillow is required to read image files: pip install Pillow")
+    img  = Image.open(path)
+    img  = _preprocess_for_ocr(img)
+    text = _ocr_image(img)
+    return text
+
+
+def _read_pdf(path: Path):
+    """
+    Extract text from a PDF.  Returns (text, ocr_used: bool).
+
+    Strategy
+    --------
+    1. Try pdfplumber — fast, lossless for digital/typed PDFs.
+    2. If fewer than _PDF_TEXT_MIN_CHARS are found (scanned / image-only PDF),
+       fall back to pdf2image + Tesseract OCR.
+    """
+    # Step 1: digital text layer
     try:
         import pdfplumber
         text_parts = []
@@ -58,22 +136,38 @@ def _read_pdf(path: Path) -> str:
                 t = page.extract_text()
                 if t:
                     text_parts.append(t)
-        return "\n".join(text_parts)
+        text = "\n".join(text_parts).strip()
     except ImportError:
-        raise ImportError("pdfplumber is required to read PDF files: pip install pdfplumber")
+        raise ImportError("pdfplumber is required: pip install pdfplumber")
     except Exception as e:
         raise RuntimeError(f"Failed to read PDF {path}: {e}")
 
+    # Step 2: fallback to OCR if text layer is empty / too short
+    if len(text) < _PDF_TEXT_MIN_CHARS:
+        print(f"[OCR] No text layer in {path.name} — running Tesseract OCR…")
+        text = _ocr_pdf(path)
+        return text, True
 
-def _read_file(path: Path) -> str:
-    """Extract text from .txt or .pdf files."""
+    return text, False
+
+
+def _read_file(path: Path):
+    """
+    Dispatch to the correct reader.  Returns (text: str, ocr_used: bool).
+    Supported formats: .txt, .pdf, .png, .jpg, .jpeg, .tiff, .tif, .bmp, .webp
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
-    if path.suffix.lower() == ".pdf":
-        return _read_pdf(path)
+
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return _read_pdf(path)   # already returns (text, ocr_used)
+    elif suffix in {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"}:
+        print(f"[OCR] Image file — running Tesseract on {path.name}…")
+        return _read_image(path), True
     else:
-        return path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8", errors="replace"), False
 
 
 def _clean(text: str) -> str:
@@ -128,12 +222,12 @@ def predict(input_: str) -> dict:
         text_preview: first 300 chars of the input text
     """
     # Resolve input: treat as file path only if short enough and exists on disk
-    text, source = input_, "<raw_text>"
+    text, source, ocr_used = input_, "<raw_text>", False
     if len(input_) < 512:
         p = Path(input_)
         try:
             if p.exists() and p.is_file():
-                text  = _read_file(p)
+                text, ocr_used = _read_file(p)
                 source = str(p)
         except OSError:
             pass  # too long or invalid path — treat as raw text
@@ -149,6 +243,7 @@ def predict(input_: str) -> dict:
         "source":       source,
         "label":        label,
         "confidence":   cls_result["confidence"],
+        "ocr_used":     ocr_used,
         "text_preview": text[:300].replace("\n", " "),
     }
 

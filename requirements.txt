@@ -8,7 +8,11 @@ scipy>=1.11.0
 pdfplumber>=0.10.0
 python-docx>=1.1.0
 pytesseract>=0.3.10
+pdf2image>=1.17.0
 Pillow>=10.0.0
+# Note: Tesseract engine must be installed separately:
+#   macOS  → brew install tesseract poppler
+#   Ubuntu → apt install tesseract-ocr poppler-utils
 
 # Dataset download
 datasets>=2.18.0

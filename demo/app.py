@@ -161,18 +161,25 @@ def run_pipeline(text: str, file):
     if "error" in result:
         return f"<p style='color:red'>{result['error']}</p>", "", ""
 
-    label = result["label"]
-    color = LABEL_COLOR.get(label, "#333")
+    label      = result["label"]
+    color      = LABEL_COLOR.get(label, "#333")
     emoji_label = LABEL_EMOJI.get(label, label)
+    ocr_used   = result.get("ocr_used", False)
 
     # ── Label card ──────────────────────────────────────────────────────────
+    ocr_badge = (
+        "<div style='margin-top:8px;font-size:0.6em;font-weight:normal;"
+        "background:rgba(255,255,255,0.25);display:inline-block;"
+        "padding:2px 10px;border-radius:20px;'>OCR</div>"
+        if ocr_used else ""
+    )
     label_html = f"""
     <div style='
         background:{color}; color:white; padding:20px 30px;
         border-radius:12px; font-size:1.5em; font-weight:bold;
         text-align:center; letter-spacing:0.03em;
     '>
-        {emoji_label}
+        {emoji_label}{ocr_badge}
     </div>
     """
 
@@ -264,8 +271,8 @@ with gr.Blocks(css=CSS, title="DocClassify — IE University") as demo:
                 placeholder="Paste invoice, email, scientific report, or letter text here…",
             )
             file_in = gr.File(
-                label="Or upload a file (.txt / .pdf)",
-                file_types=[".txt", ".pdf"],
+                label="Or upload a file (.txt / .pdf / .png / .jpg / .tiff)",
+                file_types=[".txt", ".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif"],
             )
             with gr.Row():
                 submit_btn = gr.Button("Classify", variant="primary")
