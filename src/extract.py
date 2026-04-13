@@ -119,11 +119,17 @@ def _normalise_amount(raw: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Invoice Number ────────────────────────────────────────────────────────────
+# Notes:
+#   • Max length raised to 30 to cover compound IDs like "9BF0758D-702530"
+#   • [:\-]? made optional with surrounding \s* so "Invoice number  9BF0758D"
+#     (no colon, multiple spaces) is handled
+#   • Leading character broadened to [\w] to catch numeric-first IDs
 _INV_NUMBER_PATTERNS = [
-    r"invoice\s*(?:number|no\.?|#|num)\s*[:\-]?\s*([A-Z0-9][\w\-/]{2,20})",
-    r"inv(?:oice)?\s*[#\-no\.]*\s*[:\-]?\s*([A-Z0-9][\w\-/]{2,20})",
-    r"bill\s*(?:number|no\.?|#)\s*[:\-]?\s*([A-Z0-9][\w\-/]{2,20})",
-    r"(?:^|\b)(?:INV|BILL|REF|SIN|TAX|FACTURA)[/\-](\d{3,10})",
+    r"invoice\s*(?:number|no\.?|#|num\.?)\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
+    r"inv(?:oice)?\s*[#\-no\.]*\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
+    r"bill\s*(?:number|no\.?|#)\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
+    r"(?:^|\b)(?:INV|BILL|REF|SIN|TAX|FACTURA)[/\-]([\w\-]{3,20})",
+    r"receipt\s*(?:number|no\.?|#)\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
 ]
 
 # ── Date (generic helper) ─────────────────────────────────────────────────────
@@ -136,32 +142,49 @@ _DATE_VALUE = (
 
 _INV_DATE_PATTERNS = [
     rf"invoice\s*date\s*[:\-]?\s*{_DATE_VALUE}",
-    rf"date\s*of\s*invoice\s*[:\-]?\s*{_DATE_VALUE}",
+    rf"date\s*of\s*(?:invoice|issue)\s*[:\-]?\s*{_DATE_VALUE}",  # "Date of issue"
     rf"(?:bill|billing)\s*date\s*[:\-]?\s*{_DATE_VALUE}",
-    rf"(?:^|\b)date\s*[:\-]\s*{_DATE_VALUE}",
+    rf"issue\s*date\s*[:\-]?\s*{_DATE_VALUE}",
     rf"issued\s*(?:on|date)?\s*[:\-]?\s*{_DATE_VALUE}",
+    rf"(?:^|\b)date\s*[:\-]\s*{_DATE_VALUE}",
 ]
 
 
 # ── Issuer / Recipient ────────────────────────────────────────────────────────
+# Issuer: explicit keyword labels first, then heuristic first-company-name.
+# The first-line heuristic skips generic single-word headers like "INVOICE",
+# "RECEIPT", "BILL", "STATEMENT" so we don't grab the document title.
+_GENERIC_HEADERS = {
+    "invoice", "receipt", "bill", "statement", "quotation", "quote",
+    "estimate", "proforma", "purchase", "order",
+}
+
 _ISSUER_PATTERNS = [
-    r"(?:from|issued\s*by|seller|vendor|supplier|biller)\s*[:\-]\s*([^\n\r]{3,60})",
-    r"^([A-Z][A-Za-z &\.,'\-]{5,50})\s*\n",   # First line (company name heuristic)
+    r"(?:from|issued\s*by|seller|vendor|supplier|biller|company)\s*[:\-]\s*([^\n\r]{3,60})",
+    # Multi-word line ending with a legal suffix (catches "Anthropic Ireland, Limited")
+    r"^([A-Z][A-Za-z &\.,'\-]{8,60}(?:Ltd|LLC|Inc|GmbH|SL|SA|Limited|Corp|BV|AG|PLC)\.?)\s*$",
+    # All-caps company name on its own line (e.g. "COASTAL POWER & GAS")
+    r"^([A-Z][A-Z &\'\-\.]{5,50})\s*\n",
 ]
 
 _RECIPIENT_PATTERNS = [
-    r"(?:bill(?:ed)?\s*to|sold\s*to|to|ship(?:ped)?\s*to|customer|client|recipient|buyer)\s*[:\-]\s*([^\n\r]{3,60})",
-    r"(?:dear|attn|attention)\s*[:\-]?\s*([^\n\r]{3,60})",
+    r"(?:bill(?:ed)?\s*to|sold\s*to|ship(?:ped)?\s*to|recipient|buyer)\s*[:\-]\s*([^\n\r]{3,60})",
+    r"(?:dear|attn\.?|attention)\s*[:\-]?\s*([^\n\r]{3,60})",
+    r"(?:customer|client)\s*[:\-]\s*([^\n\r]{3,60})",
+    r"(?:^|\b)to\s*[:\-]\s*([^\n\r]{3,60})",
 ]
 
 # ── Due Date (fix: "Payment Due:" without "date" keyword) ────────────────────
 _DUE_DATE_PATTERNS = [
     rf"(?:payment\s*)?due\s*date\s*[:\-]?\s*{_DATE_VALUE}",
-    rf"due\s*[:\-]\s*{_DATE_VALUE}",
+    rf"date\s*due\s*[:\-]?\s*{_DATE_VALUE}",            # "Date due" (reversed)
     rf"due\s*by\s*[:\-]?\s*{_DATE_VALUE}",
     rf"payment\s*due\s*[:\-]?\s*{_DATE_VALUE}",
+    rf"due\s*[:\-]\s*{_DATE_VALUE}",
     rf"pay(?:ment)?\s*(?:by|before|on)\s*[:\-]?\s*{_DATE_VALUE}",
     rf"payable\s*(?:by|on)\s*[:\-]?\s*{_DATE_VALUE}",
+    # "€21.78 due April 12, 2026" — amount followed by "due" followed by date
+    rf"due\s+{_DATE_VALUE}",
 ]
 
 # ── Total Amount ──────────────────────────────────────────────────────────────
@@ -171,13 +194,19 @@ _AMOUNT_VALUE = (
     r"|[\d]{1,3}(?:[,\.]\d{3})*(?:[,\.]\d{2})?\s*(?:[£$€]|USD|EUR|GBP)?)"
 )
 
+# Priority order matters:
+#   1. "Amount due" / "Balance due"  — most explicit
+#   2. "Grand total" / "Total due" / "Total payable"
+#   3. Plain "Total" — BUT with a negative lookahead to skip
+#      "Total excluding tax" / "Total excl." / "Total before tax"
 _TOTAL_PATTERNS = [
-    rf"total\s*(?:amount\s*)?(?:due|payable|owed)?\s*[:\-]?\s*{_AMOUNT_VALUE}",
-    rf"amount\s*(?:due|payable|total)\s*[:\-]?\s*{_AMOUNT_VALUE}",
+    rf"amount\s*due\s*[:\-]?\s*{_AMOUNT_VALUE}",
+    rf"(?:balance|outstanding)\s*due\s*[:\-]?\s*{_AMOUNT_VALUE}",
     rf"grand\s*total\s*[:\-]?\s*{_AMOUNT_VALUE}",
-    rf"total\s+(?:payable|due)\s*[:\-]?\s*{_AMOUNT_VALUE}",
-    rf"(?:balance\s*due|outstanding\s*balance)\s*[:\-]?\s*{_AMOUNT_VALUE}",
-    rf"(?:^|\b)total\s*[:\-]?\s*{_AMOUNT_VALUE}",
+    rf"total\s+(?:amount\s+)?(?:due|payable|owed)\s*[:\-]?\s*{_AMOUNT_VALUE}",
+    rf"total\s*(?:amount)?\s*[:\-]\s*{_AMOUNT_VALUE}",
+    # Plain "Total" — skip lines that say "excluding", "excl", "before", "net"
+    rf"(?m)^[ \t]*total(?!\s+(?:exclu|excl|before|net|tax))[^\n\d]*{_AMOUNT_VALUE}",
 ]
 
 
@@ -222,6 +251,22 @@ def extract_invoice_fields(text: str) -> dict:
     issuer      = _first_match(text, _ISSUER_PATTERNS)
     recipient   = _first_match(text, _RECIPIENT_PATTERNS)
     total_raw   = _first_match(text, _TOTAL_PATTERNS)
+
+    # Last-resort fallback: if keyword patterns found nothing, the largest
+    # monetary value in the document is very likely the total amount.
+    if not total_raw:
+        all_amounts = re.findall(
+            r"(?:[£$€]|USD|EUR|GBP)?\s*([\d]{1,3}(?:[,\.]\d{3})*(?:[,\.]\d{2}))",
+            text, re.IGNORECASE
+        )
+        if all_amounts:
+            def _to_float(s):
+                s = re.sub(r",(?=\d{3})", "", s)   # remove thousands commas
+                return float(s.replace(",", "."))
+            try:
+                total_raw = max(all_amounts, key=_to_float)
+            except (ValueError, AttributeError):
+                pass
 
     # Normalise dates and amounts
     inv_date = _normalise_date(inv_date_raw) if inv_date_raw else None
