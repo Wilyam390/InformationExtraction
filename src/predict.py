@@ -53,15 +53,11 @@ def _load_models():
 # ── text extraction from files ────────────────────────────────────────────────
 
 def _ocr_image(image) -> str:
-    """
-    Run Tesseract OCR on a PIL Image and return the extracted text.
-    Uses --oem 3 (LSTM engine) and --psm 3 (fully automatic page segmentation).
-    """
     import pytesseract
     return pytesseract.image_to_string(
         image,
         lang="eng",
-        config="--oem 3 --psm 3",
+        config="--oem 1 --psm 6",
     )
 
 
@@ -92,16 +88,16 @@ def _ocr_pdf(path: Path) -> str:
 
 
 def _preprocess_for_ocr(image):
-    """
-    Lightweight image pre-processing to improve Tesseract accuracy:
-      - Convert to greyscale
-      - Increase contrast via histogram equalisation
-    PIL-only, no OpenCV dependency needed.
-    """
     from PIL import ImageOps, ImageFilter
-    image = image.convert("L")                    # greyscale
-    image = ImageOps.autocontrast(image, cutoff=2) # stretch contrast
-    image = image.filter(ImageFilter.SHARPEN)      # mild sharpen
+    image = image.convert("L")
+    if image.width < 1000:                                         # upscale if too small
+        scale = 1000 / image.width
+        image = image.resize(
+            (int(image.width * scale), int(image.height * scale)),
+            Image.LANCZOS
+        )
+    image = ImageOps.autocontrast(image, cutoff=2)
+    image = image.filter(ImageFilter.SHARPEN)
     return image
 
 
