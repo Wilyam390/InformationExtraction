@@ -54,11 +54,26 @@ def _load_models():
 
 def _ocr_image(image) -> str:
     import pytesseract
-    return pytesseract.image_to_string(
+    lang_arg = "eng"
+    print("[OCR] Running Tesseract...", flush=True)
+    text = pytesseract.image_to_string(
         image,
-        lang="eng",
-        config="--oem 1 --psm 6",
+        lang=lang_arg,
+        config="--oem 1 --psm 4",
+        timeout=60,
     )
+    print(f"[OCR] Tesseract finished (chars={len(text.strip())}).", flush=True)
+    return text
+
+
+def _print_extracted_text(source: str, text: str, tag: str = "OCR TEXT") -> None:
+    """Print extracted text in terminal for debugging/inspection."""
+    extracted = (text or "").strip()
+    print("\n" + "=" * 80, flush=True)
+    print(f"[{tag}] Source: {source}", flush=True)
+    print("-" * 80, flush=True)
+    print(extracted if extracted else "<empty OCR output>", flush=True)
+    print("=" * 80 + "\n", flush=True)
 
 
 def _ocr_pdf(path: Path) -> str:
@@ -81,6 +96,7 @@ def _ocr_pdf(path: Path) -> str:
         # Optional: pre-process image for better OCR accuracy
         page_img = _preprocess_for_ocr(page_img)
         text = _ocr_image(page_img)
+        _print_extracted_text(f"{path.name} | page {i}", text, tag="OCR TEXT")
         if text.strip():
             text_parts.append(text)
 
@@ -88,7 +104,7 @@ def _ocr_pdf(path: Path) -> str:
 
 
 def _preprocess_for_ocr(image):
-    from PIL import ImageOps, ImageFilter
+    from PIL import Image, ImageOps, ImageFilter
     image = image.convert("L")
     if image.width < 1000:                                         # upscale if too small
         scale = 1000 / image.width
@@ -110,6 +126,7 @@ def _read_image(path: Path) -> str:
     img  = Image.open(path)
     img  = _preprocess_for_ocr(img)
     text = _ocr_image(img)
+    _print_extracted_text(path.name, text, tag="OCR TEXT")
     return text
 
 
@@ -144,6 +161,8 @@ def _read_pdf(path: Path):
         text = _ocr_pdf(path)
         return text, True
 
+    # Also print extracted text for text-based PDFs (not OCR fallback).
+    _print_extracted_text(path.name, text, tag="PDF TEXT")
     return text, False
 
 
@@ -217,16 +236,20 @@ def predict(input_: str) -> dict:
         extraction  : dict of invoice fields (only if label == 'invoice')
         text_preview: first 300 chars of the input text
     """
-    # Resolve input: treat as file path only if short enough and exists on disk
+    # Resolve input: treat as file path only if short enough and exists on disk.
+    # Do not swallow OCR/file-read errors, otherwise we may silently fall back
+    # to classifying the filename string as raw text.
     text, source, ocr_used = input_, "<raw_text>", False
     if len(input_) < 512:
         p = Path(input_)
         try:
-            if p.exists() and p.is_file():
-                text, ocr_used = _read_file(p)
-                source = str(p)
+            is_file = p.exists() and p.is_file()
         except OSError:
-            pass  # too long or invalid path — treat as raw text
+            is_file = False  # invalid path syntax on this platform
+
+        if is_file:
+            text, ocr_used = _read_file(p)
+            source = str(p)
 
     if not text.strip():
         return {"error": "Empty input — no text to classify."}
