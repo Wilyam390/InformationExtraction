@@ -88,9 +88,9 @@ def _ocr_pdf(path: Path) -> str:
 
 
 def _preprocess_for_ocr(image):
-    from PIL import ImageOps, ImageFilter
+    from PIL import Image, ImageOps, ImageFilter
     image = image.convert("L")
-    if image.width < 1000:                                         # upscale if too small
+    if image.width < 1000:
         scale = 1000 / image.width
         image = image.resize(
             (int(image.width * scale), int(image.height * scale)),
