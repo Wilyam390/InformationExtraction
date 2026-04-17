@@ -24,7 +24,7 @@ Thumbs.db
 
 # Project artifacts (don't commit — regeneratable)
 data/raw/
-reports/
+# reports/
 *.log
 
 # Node / frontend (if you merge ui-redesign later)
