@@ -16,6 +16,8 @@ A traditional ML pipeline (no generative AI) that:
 
 ---
 
+**Full technical documentation**: [docs/TECHNICAL_REPORT.md](docs/TECHNICAL_REPORT.md)
+
 ## Quick Start
 
 ```bash
