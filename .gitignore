@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Project artifacts (don't commit — regeneratable)
+data/raw/
+reports/
+*.log
+
+# Node / frontend (if you merge ui-redesign later)
+node_modules/
+dist/
+
+# Jupyter
+.ipynb_checkpoints/
