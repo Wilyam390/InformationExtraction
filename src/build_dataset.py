@@ -46,12 +46,16 @@ DATA_RAW    = ROOT / "data" / "raw"
 DATA_PROC   = ROOT / "data" / "processed"
 DATA_RAW.mkdir(parents=True, exist_ok=True)
 DATA_PROC.mkdir(parents=True, exist_ok=True)
+INVOICE_IMAGE_DIR = Path(
+    os.getenv("INVOICE_IMAGE_DIR", str(DATA_RAW / "invoice_kaggle_images"))
+)
+LOCAL_INVOICE_IMAGE_MAX = int(os.getenv("LOCAL_INVOICE_IMAGE_MAX", "1500"))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TARGETS
 # ─────────────────────────────────────────────────────────────────────────────
 TRAIN_TARGETS = {"invoice": 4001, "email": 5000, "scientific_report": 5000, "letter": 5000}
-TEST_TARGETS  = {"invoice":  125, "email": 1000, "scientific_report": 1000, "letter": 1000}
+TEST_TARGETS  = {"invoice":  700, "email": 1000, "scientific_report": 1000, "letter": 1000}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -69,6 +73,17 @@ def clean(text: str) -> str:
 
 def truncate(text: str, max_chars=3000) -> str:
     return text[:max_chars]
+
+
+def _iter_image_files(base_dir: Path):
+    exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+    if not base_dir.exists():
+        return []
+    files = []
+    for p in base_dir.rglob("*"):
+        if p.is_file() and p.suffix.lower() in exts:
+            files.append(p)
+    return files
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYNTHETIC GENERATORS
@@ -420,25 +435,77 @@ def load_real_invoices(max_samples: int):
     Real invoice/receipt texts.
     Tries multiple HuggingFace sources; falls back gracefully to synthetic.
     """
-    if not HF_AVAILABLE:
-        return []
     texts = []
 
+    # Source 0: local Kaggle invoice images (OCR)
+    # Expected location: data/raw/invoice_kaggle_images/**/*
+    # You can override via INVOICE_IMAGE_DIR env var.
+    if len(texts) < max_samples:
+        try:
+            image_files = _iter_image_files(INVOICE_IMAGE_DIR)
+            if image_files:
+                print(f"  Reading local invoice images from {INVOICE_IMAGE_DIR} …")
+                try:
+                    from PIL import Image
+                    import pytesseract
+                except ImportError as e:
+                    raise ImportError(
+                        "Pillow and pytesseract are required for image OCR. "
+                        "Install with: pip install Pillow pytesseract"
+                    ) from e
+
+                random.shuffle(image_files)
+                local_budget = min(max_samples - len(texts), LOCAL_INVOICE_IMAGE_MAX)
+                image_files = image_files[:local_budget]
+                print(f"  local OCR budget: {local_budget} images")
+
+                for i, img_path in enumerate(image_files, 1):
+                    try:
+                        with Image.open(img_path) as img:
+                            txt = pytesseract.image_to_string(
+                                img,
+                                lang="eng",
+                                config="--oem 1 --psm 4",
+                                timeout=60,
+                            )
+                    except Exception:
+                        continue
+
+                    t = clean(txt)
+                    if len(t) > 50:
+                        texts.append(truncate(t))
+                    if i % 200 == 0:
+                        print(f"    OCR processed {i}/{len(image_files)} images")
+                    if len(texts) >= max_samples:
+                        break
+                print(f"  local invoice images → {len(texts)} samples")
+            else:
+                print(
+                    f"  [INFO] No local invoice images found at {INVOICE_IMAGE_DIR} "
+                    f"(skipping local OCR source)"
+                )
+        except Exception as e:
+            print(f"  [WARN] local invoice image OCR failed: {e}")
+
+    if not HF_AVAILABLE:
+        return texts[:max_samples]
+
     # Source 1: katanaml-org/invoices-donut-data  (English invoice JSONs)
-    try:
-        print("  Downloading invoice dataset (katanaml-org)…")
-        ds = load_dataset("katanaml-org/invoices-donut-data", split="train")
-        for row in ds:
-            # ground_truth is a JSON string with invoice fields
-            raw = row.get("ground_truth", "") or row.get("text", "")
-            t   = clean(str(raw))
-            if len(t) > 50:
-                texts.append(truncate(t))
-            if len(texts) >= max_samples:
-                break
-        print(f"  katanaml invoices → {len(texts)} samples")
-    except Exception as e:
-        print(f"  [WARN] katanaml invoices failed: {e}")
+    if len(texts) < max_samples:
+        try:
+            print("  Downloading invoice dataset (katanaml-org)…")
+            ds = load_dataset("katanaml-org/invoices-donut-data", split="train")
+            for row in ds:
+                # ground_truth is a JSON string with invoice fields
+                raw = row.get("ground_truth", "") or row.get("text", "")
+                t   = clean(str(raw))
+                if len(t) > 50:
+                    texts.append(truncate(t))
+                if len(texts) >= max_samples:
+                    break
+            print(f"  katanaml invoices → {len(texts)} samples")
+        except Exception as e:
+            print(f"  [WARN] katanaml invoices failed: {e}")
 
     # Source 2: mychen76/invoices-and-receipts_ocr_v1
     if len(texts) < max_samples:

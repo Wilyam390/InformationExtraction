@@ -268,12 +268,11 @@ def predict(input_: str) -> dict:
 
     # Extract fields if invoice
     if label == "invoice":
-        import importlib, sys as _sys
+        import sys as _sys
         # Support both `python3 src/predict.py` and `import src.predict`
         try:
             from src.extract import extract_invoice_fields
         except ModuleNotFoundError:
-            import os as _os
             _sys.path.insert(0, str(ROOT / "src"))
             from extract import extract_invoice_fields  # type: ignore
         result["extraction"] = extract_invoice_fields(text)

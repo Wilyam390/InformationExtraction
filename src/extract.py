@@ -53,6 +53,8 @@ def _normalise_date(raw: str) -> str:
     Falls back to returning the cleaned raw string if parsing fails.
     """
     raw = raw.strip()
+    # OCR often inserts random spaces around separators: "01/02 / 2020"
+    raw = re.sub(r"\s*([/\-.])\s*", r"\1", raw)
 
     # Already ISO  2024-03-15
     if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
@@ -104,14 +106,38 @@ def _normalise_amount(raw: str) -> str:
     """Strip currency symbols and normalise decimal separators."""
     raw = raw.strip()
     # Remove currency symbols / codes
-    raw = re.sub(r"[£$€]|USD|EUR|GBP", "", raw).strip()
-    # European format: 1.234,56 → 1234.56
-    if re.search(r"\d{1,3}(?:\.\d{3})+,\d{2}$", raw):
-        raw = raw.replace(".", "").replace(",", ".")
+    raw = re.sub(r"[£$€]|USD|EUR|GBP|CHF", "", raw, flags=re.IGNORECASE).strip()
+    # European format: 1.234,56 or 1 234,56 → 1234.56
+    if re.search(r"\d{1,3}(?:[.\s]\d{3})+,\d{2}$", raw):
+        raw = raw.replace(".", "").replace(" ", "").replace(",", ".")
     else:
         # Remove thousands separator commas:  1,234.56 → 1234.56
         raw = re.sub(r",(?=\d{3}(?:[.,]|$))", "", raw)
+        # Comma decimal without dot thousands: 3912,75 -> 3912.75
+        if "," in raw and "." not in raw and re.search(r",\d{2}$", raw):
+            raw = raw.replace(",", ".")
+        # If OCR produced "54 50" (missing decimal separator), convert to "54.50"
+        raw = re.sub(r"\b(\d+)\s+(\d{2})\b", r"\1.\2", raw)
     return raw.strip()
+
+
+def _normalise_ocr_text(text: str) -> str:
+    """
+    Lightweight OCR cleanup to improve regex hit-rate without changing schema.
+    """
+    t = text
+    # Common OCR confusions around labels / keys
+    t = re.sub(r"\b1nvoice\b", "invoice", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b1nv\b", "inv", t, flags=re.IGNORECASE)
+    t = re.sub(r"\btota[1l]\b", "total", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bam0unt\b", "amount", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bdue\s*da[tf]e\b", "due date", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bi[1l]\s*va\b", "iva", t, flags=re.IGNORECASE)
+    # Normalize currency typos around CHF
+    t = re.sub(r"\bcif\b", "CHF", t, flags=re.IGNORECASE)
+    # Normalize repeated spacing
+    t = re.sub(r"[ \t]+", " ", t)
+    return t
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,16 +152,17 @@ def _normalise_amount(raw: str) -> str:
 #   • Leading character broadened to [\w] to catch numeric-first IDs
 _INV_NUMBER_PATTERNS = [
     r"invoice\s*(?:number|no\.?|#|num\.?)\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
-    r"inv(?:oice)?\s*[#\-no\.]*\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
+    r"inv(?:oice)?\s*(?:#|no\.?|num\.?)\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
     r"bill\s*(?:number|no\.?|#)\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
+    r"(?:document|reference|ref)\s*(?:number|no\.?|#)?\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
     r"(?:^|\b)(?:INV|BILL|REF|SIN|TAX|FACTURA)[/\-]([\w\-]{3,20})",
     r"receipt\s*(?:number|no\.?|#)\s*[:\-]?\s*([\w][\w\-/\.]{2,30})",
 ]
 
 # ── Date (generic helper) ─────────────────────────────────────────────────────
 _DATE_VALUE = (
-    r"(\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}"       # 2024-03-15
-    r"|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}"      # 15/03/2024 or 15/03/24
+    r"(\d{4}\s*[\/\-\.]\s*\d{1,2}\s*[\/\-\.]\s*\d{1,2}"       # 2024-03-15
+    r"|\d{1,2}\s*[\/\-\.]\s*\d{1,2}\s*[\/\-\.]\s*\d{2,4}"      # 15/03/2024 or 15/03/24
     r"|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4}"         # 15 March 2024
     r"|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})"      # March 15, 2024
 )
@@ -146,7 +173,8 @@ _INV_DATE_PATTERNS = [
     rf"(?:bill|billing)\s*date\s*[:\-]?\s*{_DATE_VALUE}",
     rf"issue\s*date\s*[:\-]?\s*{_DATE_VALUE}",
     rf"issued\s*(?:on|date)?\s*[:\-]?\s*{_DATE_VALUE}",
-    rf"(?:^|\b)date\s*[:\-]\s*{_DATE_VALUE}",
+    # Generic "Date 01/02/2020" (avoid matching "Due Date")
+    rf"(?<!due )\bdate\s*[:\-]?\s*{_DATE_VALUE}",
 ]
 
 
@@ -173,6 +201,10 @@ _RECIPIENT_PATTERNS = [
     r"(?:customer|client)\s*[:\-]\s*([^\n\r]{3,60})",
     r"(?:^|\b)to\s*[:\-]\s*([^\n\r]{3,60})",
 ]
+
+_GENERIC_PARTY_VALUES = {
+    "seller", "client", "buyer", "customer", "vendor", "supplier", "company"
+}
 
 # ── Due Date (fix: "Payment Due:" without "date" keyword) ────────────────────
 _DUE_DATE_PATTERNS = [
@@ -204,6 +236,7 @@ _TOTAL_PATTERNS = [
     rf"(?:balance|outstanding)\s*due\s*[:\-]?\s*{_AMOUNT_VALUE}",
     rf"grand\s*total\s*[:\-]?\s*{_AMOUNT_VALUE}",
     rf"total\s+(?:amount\s+)?(?:due|payable|owed)\s*[:\-]?\s*{_AMOUNT_VALUE}",
+    rf"(?:invoice|bill)\s*total\s*[:\-]?\s*{_AMOUNT_VALUE}",
     rf"total\s*(?:amount)?\s*[:\-]\s*{_AMOUNT_VALUE}",
     # Plain "Total" — skip lines that say "excluding", "excl", "before", "net"
     rf"(?m)^[ \t]*total(?!\s+(?:exclu|excl|before|net|tax))[^\n\d]*{_AMOUNT_VALUE}",
@@ -214,6 +247,12 @@ _TOTAL_PATTERNS = [
 # CORE EXTRACTOR
 # ─────────────────────────────────────────────────────────────────────────────
 
+_AMOUNT_RE = re.compile(
+    r"(?:[£$€]|USD|EUR|GBP|CHF)\s*\d+(?:[,\.\s]\d{3})*(?:[,\.\s]\d{2})?"
+    r"|\d+(?:[,\.\s]\d{3})*(?:[,\.\s]\d{2})\s*(?:[£$€]|USD|EUR|GBP|CHF)?",
+    re.IGNORECASE,
+)
+
 def _first_match(text: str, patterns: list) -> Optional[str]:
     """Try each pattern; return the first captured group that matches."""
     for pat in patterns:
@@ -222,6 +261,90 @@ def _first_match(text: str, patterns: list) -> Optional[str]:
             val = m.group(1).strip().strip(".,;:")
             if val:
                 return val
+    return None
+
+
+def _first_match_any(texts: list[str], patterns: list) -> Optional[str]:
+    """Try patterns against multiple text variants; first match wins."""
+    for t in texts:
+        val = _first_match(t, patterns)
+        if val:
+            return val
+    return None
+
+
+def _looks_generic_party(v: Optional[str]) -> bool:
+    if not v:
+        return True
+    x = re.sub(r"[^a-z]", "", v.lower())
+    return x in _GENERIC_PARTY_VALUES
+
+
+def _extract_party_pair_from_seller_client_layout(text: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Handle OCR where headers appear as "Seller: Client:" on one line and
+    both names are on the next line (e.g. "Abbott ... Wilson PLC").
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    for i, ln in enumerate(lines):
+        l = ln.lower()
+        if "seller" in l and "client" in l:
+            # next non-empty line often contains both names
+            nxt = ""
+            for j in range(i + 1, min(i + 5, len(lines))):
+                if lines[j]:
+                    nxt = lines[j]
+                    break
+            if not nxt:
+                continue
+
+            # Try to split by a legal suffix at the end (recipient side)
+            m = re.match(
+                r"^(.+?)\s+([A-Z][A-Za-z0-9&.,'\-]+(?:\s+[A-Z][A-Za-z0-9&.,'\-]+){0,3}\s+(?:PLC|LLC|LTD|INC|CORP|GMBH|SL|SA|BV|AG)\.?)$",
+                nxt,
+            )
+            if m:
+                issuer = m.group(1).strip(" ,;:")
+                recipient = m.group(2).strip(" ,;:")
+                # OCR can split at the wrong token in names like
+                # "Abbott, Martinez and Nunez Wilson PLC"
+                # where recipient should be "Wilson PLC".
+                if issuer.lower().endswith(" and"):
+                    parts = recipient.split()
+                    if len(parts) >= 3:
+                        issuer = (issuer + " " + parts[0]).strip()
+                        recipient = " ".join(parts[1:]).strip()
+                if issuer and recipient:
+                    return issuer, recipient
+    return None, None
+
+
+def _extract_total_from_total_line(text: str) -> Optional[str]:
+    """
+    Prefer values from lines containing 'total' (excluding subtotal/tax),
+    and pick the largest monetary value on that line as grand total.
+    """
+    for line in text.splitlines():
+        ll = line.lower()
+        if "total" not in ll:
+            continue
+        if "subtotal" in ll or "sub total" in ll:
+            continue
+        if "tax" in ll and "total" not in ll:
+            continue
+
+        amounts = _AMOUNT_RE.findall(line)
+        if not amounts:
+            continue
+        try:
+            vals = []
+            for a in amounts:
+                norm = _normalise_amount(a)
+                vals.append((float(norm), norm))
+            vals.sort(key=lambda x: x[0], reverse=True)
+            return vals[0][1]
+        except Exception:
+            continue
     return None
 
 
@@ -244,20 +367,33 @@ def extract_invoice_fields(text: str) -> dict:
     # Pre-process: normalise whitespace but preserve line breaks
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text_norm = _normalise_ocr_text(text)
+    candidates = [text, text_norm]
 
-    inv_number  = _first_match(text, _INV_NUMBER_PATTERNS)
-    inv_date_raw = _first_match(text, _INV_DATE_PATTERNS)
-    due_date_raw = _first_match(text, _DUE_DATE_PATTERNS)
-    issuer      = _first_match(text, _ISSUER_PATTERNS)
-    recipient   = _first_match(text, _RECIPIENT_PATTERNS)
-    total_raw   = _first_match(text, _TOTAL_PATTERNS)
+    inv_number  = _first_match_any(candidates, _INV_NUMBER_PATTERNS)
+    inv_date_raw = _first_match_any(candidates, _INV_DATE_PATTERNS)
+    due_date_raw = _first_match_any(candidates, _DUE_DATE_PATTERNS)
+    issuer      = _first_match_any(candidates, _ISSUER_PATTERNS)
+    recipient   = _first_match_any(candidates, _RECIPIENT_PATTERNS)
+
+    # Special-case two-column "Seller: Client:" OCR layout.
+    pair_issuer, pair_recipient = _extract_party_pair_from_seller_client_layout(text_norm)
+    if pair_issuer and (_looks_generic_party(issuer) or (recipient and issuer and recipient in issuer)):
+        issuer = pair_issuer
+    if pair_recipient and (_looks_generic_party(recipient) or (issuer and recipient and issuer in recipient)):
+        recipient = pair_recipient
+
+    # Prefer explicit "Total ..." line parsing for grand total.
+    total_raw = _extract_total_from_total_line(text_norm)
+    if not total_raw:
+        total_raw = _first_match_any(candidates, _TOTAL_PATTERNS)
 
     # Last-resort fallback: if keyword patterns found nothing, the largest
     # monetary value in the document is very likely the total amount.
     if not total_raw:
         all_amounts = re.findall(
-            r"(?:[£$€]|USD|EUR|GBP)?\s*([\d]{1,3}(?:[,\.]\d{3})*(?:[,\.]\d{2}))",
-            text, re.IGNORECASE
+            r"(?:[£$€]|USD|EUR|GBP|CHF)?\s*([\d]+(?:[,\.\s]\d{3})*(?:[,\.]\d{2}))",
+            text_norm, re.IGNORECASE
         )
         if all_amounts:
             def _to_float(s):
