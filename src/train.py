@@ -25,12 +25,8 @@ import pandas as pd
 from pathlib import Path
 from collections import Counter
 
-from sklearn.pipeline import Pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
