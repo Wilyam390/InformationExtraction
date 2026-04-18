@@ -53,16 +53,27 @@ def _load_models():
 # ── text extraction from files ────────────────────────────────────────────────
 
 def _ocr_image(image) -> str:
-    """
-    Run Tesseract OCR on a PIL Image and return the extracted text.
-    Uses --oem 3 (LSTM engine) and --psm 3 (fully automatic page segmentation).
-    """
     import pytesseract
-    return pytesseract.image_to_string(
+    lang_arg = "eng"
+    print("[OCR] Running Tesseract...", flush=True)
+    text = pytesseract.image_to_string(
         image,
-        lang="eng",
-        config="--oem 3 --psm 3",
+        lang=lang_arg,
+        config="--oem 1 --psm 4",
+        timeout=60,
     )
+    print(f"[OCR] Tesseract finished (chars={len(text.strip())}).", flush=True)
+    return text
+
+
+def _print_extracted_text(source: str, text: str, tag: str = "OCR TEXT") -> None:
+    """Print extracted text in terminal for debugging/inspection."""
+    extracted = (text or "").strip()
+    print("\n" + "=" * 80, flush=True)
+    print(f"[{tag}] Source: {source}", flush=True)
+    print("-" * 80, flush=True)
+    print(extracted if extracted else "<empty OCR output>", flush=True)
+    print("=" * 80 + "\n", flush=True)
 
 
 def _ocr_pdf(path: Path) -> str:
@@ -85,6 +96,7 @@ def _ocr_pdf(path: Path) -> str:
         # Optional: pre-process image for better OCR accuracy
         page_img = _preprocess_for_ocr(page_img)
         text = _ocr_image(page_img)
+        _print_extracted_text(f"{path.name} | page {i}", text, tag="OCR TEXT")
         if text.strip():
             text_parts.append(text)
 
@@ -92,16 +104,16 @@ def _ocr_pdf(path: Path) -> str:
 
 
 def _preprocess_for_ocr(image):
-    """
-    Lightweight image pre-processing to improve Tesseract accuracy:
-      - Convert to greyscale
-      - Increase contrast via histogram equalisation
-    PIL-only, no OpenCV dependency needed.
-    """
-    from PIL import ImageOps, ImageFilter
-    image = image.convert("L")                    # greyscale
-    image = ImageOps.autocontrast(image, cutoff=2) # stretch contrast
-    image = image.filter(ImageFilter.SHARPEN)      # mild sharpen
+    from PIL import Image, ImageOps, ImageFilter
+    image = image.convert("L")
+    if image.width < 1000:
+        scale = 1000 / image.width
+        image = image.resize(
+            (int(image.width * scale), int(image.height * scale)),
+            Image.LANCZOS
+        )
+    image = ImageOps.autocontrast(image, cutoff=2)
+    image = image.filter(ImageFilter.SHARPEN)
     return image
 
 
@@ -114,6 +126,7 @@ def _read_image(path: Path) -> str:
     img  = Image.open(path)
     img  = _preprocess_for_ocr(img)
     text = _ocr_image(img)
+    _print_extracted_text(path.name, text, tag="OCR TEXT")
     return text
 
 
@@ -148,6 +161,8 @@ def _read_pdf(path: Path):
         text = _ocr_pdf(path)
         return text, True
 
+    # Also print extracted text for text-based PDFs (not OCR fallback).
+    _print_extracted_text(path.name, text, tag="PDF TEXT")
     return text, False
 
 
@@ -221,16 +236,20 @@ def predict(input_: str) -> dict:
         extraction  : dict of invoice fields (only if label == 'invoice')
         text_preview: first 300 chars of the input text
     """
-    # Resolve input: treat as file path only if short enough and exists on disk
+    # Resolve input: treat as file path only if short enough and exists on disk.
+    # Do not swallow OCR/file-read errors, otherwise we may silently fall back
+    # to classifying the filename string as raw text.
     text, source, ocr_used = input_, "<raw_text>", False
     if len(input_) < 512:
         p = Path(input_)
         try:
-            if p.exists() and p.is_file():
-                text, ocr_used = _read_file(p)
-                source = str(p)
+            is_file = p.exists() and p.is_file()
         except OSError:
-            pass  # too long or invalid path — treat as raw text
+            is_file = False  # invalid path syntax on this platform
+
+        if is_file:
+            text, ocr_used = _read_file(p)
+            source = str(p)
 
     if not text.strip():
         return {"error": "Empty input — no text to classify."}
@@ -249,12 +268,11 @@ def predict(input_: str) -> dict:
 
     # Extract fields if invoice
     if label == "invoice":
-        import importlib, sys as _sys
+        import sys as _sys
         # Support both `python3 src/predict.py` and `import src.predict`
         try:
             from src.extract import extract_invoice_fields
         except ModuleNotFoundError:
-            import os as _os
             _sys.path.insert(0, str(ROOT / "src"))
             from extract import extract_invoice_fields  # type: ignore
         result["extraction"] = extract_invoice_fields(text)

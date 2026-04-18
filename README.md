@@ -24,6 +24,14 @@ A traditional ML pipeline (no generative AI) that:
 # 1. Install dependencies
 pip install -r requirements.txt
 
+# Optional: add local Kaggle invoice images for real OCR training data
+# Place extracted images under:
+#   data/raw/invoice_kaggle_images/
+# or set:
+#   export INVOICE_IMAGE_DIR="/absolute/path/to/extracted/images"
+# Limit how many local images are OCR-processed per run (default: 1500)
+#   export LOCAL_INVOICE_IMAGE_MAX=1500
+
 # 2. Build dataset (downloads real data + generates synthetic samples)
 python3 src/build_dataset.py
 
@@ -46,6 +54,7 @@ python3 src/predict.py path/to/document.pdf
 InformationExtraction/
 ├── data/
 │   ├── raw/                  # (auto-populated by build_dataset.py)
+│   │   └── invoice_kaggle_images/   # optional local Kaggle invoice images (OCR source)
 │   └── processed/
 │       ├── train.csv         # 19,001 rows
 │       └── test.csv          #  3,125 rows
@@ -143,3 +152,4 @@ print(result["extraction"])  # {"invoice_number": "INV-001", ...}
 - datasets (HuggingFace) — for dataset building only
 - pdfplumber — for PDF reading
 - gradio — for demo UI
+- transformers + torch — optional, for Donut extraction backend

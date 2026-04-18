@@ -5,7 +5,7 @@
     "scientific_report",
     "letter"
   ],
-  "accuracy": 0.9997,
+  "accuracy": 1.0,
   "model": "LinearSVC",
   "features": "TF-IDF word(1-2)+char(3-5) n-grams"
 }
